@@ -61,19 +61,19 @@ func (e Expr) Match(pattern string, s string) (matched bool, err error) {
 
 // cache defines a memoized data structure that associates regular expression
 // patterns with their compiled regexp.Regexp representations.
-// It contains synchronization primitives for safely accessing elements 
+// It contains synchronization primitives for safely accessing elements
 // concurrently from multiple goroutines.
 //
 // From a (Expr).Match context, it enables reuse of regexp.Regexp objects across
 // multiple calls without having to recompile the pattern string each time.
 type cache struct {
 	pattern map[string]*regexp.Regexp
-	lock sync.RWMutex
+	lock    sync.RWMutex
 }
 
 // matchCache is a package-global cache for use with (Expr).Match.
 // See godoc comments on type cache for details.
-var matchCache cache
+var matchCache = cache{pattern: map[string]*regexp.Regexp{}}
 
 // get returns a compiled regexp.Regexp object for the given regular expression
 // string pattern. The pattern will be compiled and added to the receiver cache
