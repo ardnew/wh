@@ -14,10 +14,12 @@ import (
 // Option defines all search and match options for the exported Match functions.
 type Option struct {
 	FollowSymlinks bool      // Follow symlinks when recursing into subdirectories
+	MaxFollow      int       // Maximum number symlink components to follow
 	MaxDepth       int       // Maximum number of subdirectory recursions
 	Expr           expr.Expr // Matching semantics of the given pattern
 	IgnoreCase     bool      // Ignore case in matching semantics
 	WorkingDir     string    // Current working directory
+	fromFollow     int       // Count prior to following a symlink
 	fromDepth      int       // Depth prior to dereferencing a symlink
 }
 
@@ -91,13 +93,15 @@ func (e ErrInvalidPath) Error() string {
 // ValidPath reports whether the given string s contains invalid symbols for a
 // file path.
 func ValidPath(s string) error {
+	// Silently ignore certain runes that are not valid in a path.
 	ignore := string(os.PathSeparator) + "."
 	strip := func(r rune) rune {
 		if strings.ContainsRune(ignore, r) {
-			return rune(-1) // strip all ignored runes
+			return rune(-1)
 		}
 		return r
 	}
+	// Note this has different semantics than strings.ContainsAny(s, ignore).
 	if !fs.ValidPath(strings.Map(strip, s)) {
 		return ErrInvalidPath(s)
 	}
@@ -136,8 +140,15 @@ func Match(option Option, pattern string, sub ...string) (found []string, err er
 					return fs.SkipDir
 				}
 
+				// Stop following symlinks as soon as we exceed MaxFollow.
+				option.FollowSymlinks = option.FollowSymlinks &&
+					(option.MaxFollow < 0 || option.fromFollow < option.MaxFollow)
+
 				// Special processing for symlinks if we should follow them.
 				if option.FollowSymlinks && d.Type()&fs.ModeSymlink != 0 {
+
+					// Update our symlink follow count.
+					option.fromFollow++
 
 					// Descriptors for the fully-resolved symlink
 					var info os.FileInfo

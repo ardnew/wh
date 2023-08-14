@@ -39,6 +39,9 @@ func (e Expr) String() string {
 	return ErrInvalidExpr(e).Error()
 }
 
+// matchCache is a package-global Cache for use with (Expr).Match.
+var matchCache = Cache{&sync.RWMutex{}, map[string]*regexp.Regexp{}}
+
 // Match reports whether the given string s matches the given string pattern
 // according to the semantics of the receiver Expr e.
 // Match is safe to call from multiple goroutines concurrently.
@@ -50,47 +53,11 @@ func (e Expr) Match(pattern string, s string) (matched bool, err error) {
 		matched, err = path.Match(pattern, s)
 	case Regexp:
 		var r *regexp.Regexp
-		if r, err = matchCache.get(pattern); err == nil {
+		if r, err = matchCache.Get(pattern); err == nil {
 			matched = r.MatchString(s)
 		}
 	default:
 		matched, err = false, ErrInvalidExpr(e)
 	}
 	return
-}
-
-// cache defines a memoized data structure that associates regular expression
-// patterns with their compiled regexp.Regexp representations.
-// It contains synchronization primitives for safely accessing elements
-// concurrently from multiple goroutines.
-//
-// From a (Expr).Match context, it enables reuse of regexp.Regexp objects across
-// multiple calls without having to recompile the pattern string each time.
-type cache struct {
-	pattern map[string]*regexp.Regexp
-	lock    sync.RWMutex
-}
-
-// matchCache is a package-global cache for use with (Expr).Match.
-// See godoc comments on type cache for details.
-var matchCache = cache{pattern: map[string]*regexp.Regexp{}}
-
-// get returns a compiled regexp.Regexp object for the given regular expression
-// string pattern. The pattern will be compiled and added to the receiver cache
-// if it is not present. This method is safe to call from multiple goroutines
-// concurrently.
-func (c *cache) get(pattern string) (*regexp.Regexp, error) {
-	c.lock.RLock()
-	r, ok := c.pattern[pattern]
-	c.lock.RUnlock()
-	if !ok {
-		var err error
-		if r, err = regexp.Compile(pattern); err != nil {
-			return nil, err
-		}
-		c.lock.Lock()
-		c.pattern[pattern] = r
-		c.lock.Unlock()
-	}
-	return r, nil
 }

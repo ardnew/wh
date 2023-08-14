@@ -31,7 +31,7 @@ func (e ErrNotFound) Error() string {
 type ErrNoArg bool
 
 // Error returns a descriptive error string for the receiver ErrNoArg e.
-func (e ErrNoArg) Error() string {
+func (ErrNoArg) Error() string {
 	return "no search pattern"
 }
 
@@ -77,20 +77,22 @@ type flags struct {
 func main() {
 
 	fl := flags{FlagSet: flag.NewFlagSet("wh", flag.ContinueOnError), dir: PathFlag{}}
-	fl.Usage = func() {}
+	fl.Usage = fl.PrintDefaults
 
 	var fixedFlag, globFlag, regexpFlag bool
-	var allFlag, nullFlag, quietFlag bool
+	var allFlag, nullFlag, quietFlag, warnFlag bool
 
 	fl.BoolVar(&fl.opt.FollowSymlinks, "L", false, "Follow symbolic links")
+	fl.IntVar(&fl.opt.MaxFollow, "s", 0, "Dereference up to `count` chains of symbolic links (-1 = unlimited)")
 	fl.IntVar(&fl.opt.MaxDepth, "d", 1, "Limit directory traversal to `depth` levels")
 	fl.BoolVar(&fixedFlag, "F", true, "Use fixed string matching")
 	fl.BoolVar(&globFlag, "g", false, "Use glob pattern matching")
 	fl.BoolVar(&regexpFlag, "e", false, "Use regular expression pattern matching")
 	fl.BoolVar(&fl.opt.IgnoreCase, "i", false, "Use case-insensitive matching")
 	fl.BoolVar(&allFlag, "a", false, "Report all matching files")
-	fl.BoolVar(&nullFlag, "0", false, "Append NUL to each line instead of newline")
+	fl.BoolVar(&nullFlag, "0", false, "Delimit output with null ('\\0') instead of newline ('\\n')")
 	fl.BoolVar(&quietFlag, "q", false, "Print nothing; status indicates match found")
+	fl.BoolVar(&warnFlag, "w", false, "Print warning and diagnostic messages")
 	fl.Var(&fl.dir, "p", "Search only in `path-list` (can be specified multiple times)")
 
 	var errWriter, outWriter io.Writer = os.Stderr, os.Stdout
@@ -127,18 +129,28 @@ func main() {
 	}
 
 	if len(fl.dir) == 0 {
+		var err error
 		if p, ok := os.LookupEnv("PATH"); ok {
-			fl.dir.Set(p)
+			err = fl.dir.Set(p)
 		} else {
-			fl.dir.Set(fl.opt.WorkingDir)
+			err = fl.dir.Set(fl.opt.WorkingDir)
+		}
+		if err != nil {
+			halt(errWriter, err)
 		}
 	}
 
 	found := []string{}
+	warns := []error{}
 	for _, a := range fl.Args() {
 		f, err := fn(fl.opt, a, fl.dir...)
 		if err != nil {
-			halt(errWriter, err)
+			warn := fmt.Errorf("warning: %w", err)
+			if warnFlag {
+				fmt.Fprintln(errWriter, warn)
+			} else {
+				warns = append(warns, warn)
+			}
 		}
 		if !allFlag && len(f) > 0 {
 			found = f[0:1]
@@ -148,6 +160,11 @@ func main() {
 	}
 
 	if len(found) == 0 {
+		if !warnFlag {
+			for _, w := range warns {
+				fmt.Fprintln(errWriter, w)
+			}
+		}
 		halt(errWriter, ErrNotFound(fl.Args()))
 	}
 
@@ -163,7 +180,8 @@ func halt(w io.Writer, err error, final ...func()) {
 				f()
 			}
 		} else {
-			fmt.Fprintf(w, "error: %s\n", err)
+			fmt.Fprint(w, "error: ")
+			fmt.Fprintln(w, err)
 		}
 		switch err.(type) {
 		case ErrNotFound:
@@ -175,6 +193,9 @@ func halt(w io.Writer, err error, final ...func()) {
 		case wh.ErrInvalidPath:
 			os.Exit(4)
 		default:
+			if err == flag.ErrHelp {
+				os.Exit(0)
+			}
 			os.Exit(127)
 		}
 	}
