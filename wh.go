@@ -139,30 +139,29 @@ func Match(option Option, pattern string, sub ...string) (found []string, err er
 					// Stop processing this subtree if it exceeds MaxDepth.
 					return fs.SkipDir
 				}
-
-				// Stop following symlinks as soon as we exceed MaxFollow.
-				option.FollowSymlinks = option.FollowSymlinks &&
-					(option.MaxFollow < 0 || option.fromFollow < option.MaxFollow)
+        name := c
 
 				// Special processing for symlinks if we should follow them.
 				if option.FollowSymlinks && d.Type()&fs.ModeSymlink != 0 {
 
-					// Update our symlink follow count.
-					option.fromFollow++
-
 					// Descriptors for the fully-resolved symlink
 					var info os.FileInfo
-					var dest = c
+					var dest = path.Join(root, c)
 
 					// Repeatedly dereference the symlink until we have a regular file.
 					for {
-						var rerr, lerr error
-						dest, rerr = os.Readlink(dest)
-						info, lerr = os.Lstat(dest)
-						// Just ignore the symlink if there is an error of any sort.
-						if rerr == nil || lerr == nil {
-							return nil
+            rdest, rerr := os.Readlink(dest)
+            if rerr != nil {
+              return nil // Just ignore the symlink if there is any error.
+            }
+            if !path.IsAbs(rdest) {
+              rdest = path.Join(path.Dir(dest), rdest)
+            }
+            linfo, lerr := os.Lstat(rdest)
+						if lerr != nil {
+							return nil // Just ignore the symlink if there is any error.
 						}
+            info, dest = linfo, rdest
 						if info.Mode().Type()&os.ModeSymlink == 0 {
 							// Dereferenced file is not a symlink; stop dereferencing.
 							break
@@ -177,12 +176,20 @@ func Match(option Option, pattern string, sub ...string) (found []string, err er
 						// Regardless of the number of indirections, we consider it having
 						// recursed only 1 level. Verify that it doesn't exceed MaxDepth.
 						if depth+1 <= option.MaxDepth {
-							// Copy our existing Options, and update fromDepth so that the
-							// recursive call to Match can accurately keep track of our depth,
-							// which can no longer be computed by simply counting the number
-							// of directories between our Walk root and current descendent.
+							// Copy our existing Options, and update traversal counters so 
+              // that the recursive call to Match can accurately keep track
+							// (which can not be computed by simply counting the number
+							// of directories between our Walk root and current descendent).
+              //
+              // This only modifies the copied Options struct;
+              //   the Options from the caller's context remain unmodified.
 							lopt := option
 							lopt.fromDepth = depth
+      				// Stop following symlinks as soon as we exceed MaxFollow.
+              lopt.fromFollow++
+				      lopt.FollowSymlinks = lopt.fromFollow < lopt.MaxFollow ||
+                lopt.MaxFollow < 0 // Negative = unlimited dereferences
+
 							mfound, merr := Match(lopt, pattern, dest)
 							// Just ignore the symlink if there is an error of any sort.
 							if merr == nil {
@@ -200,7 +207,7 @@ func Match(option Option, pattern string, sub ...string) (found []string, err er
 				// Finally, if current file is not a directory, test if it matches the
 				// user-provided pattern.
 				if !d.IsDir() {
-					base := path.Base(c)
+					base := path.Base(name)
 					if option.IgnoreCase {
 						base = strings.ToLower(base)
 					}
@@ -211,11 +218,15 @@ func Match(option Option, pattern string, sub ...string) (found []string, err er
 						return merr
 					} else if ok {
 						// No error, add the current file to our list of matches.
-						a := path.Join(root, c)
-						if !strings.HasPrefix(a, string(os.PathSeparator)) {
-							a = path.Join(option.WorkingDir, a)
-						}
-						found = append(found, a)
+            if path.IsAbs(c) {
+              found = append(found, c)
+            } else {
+  						a := path.Join(root, name)
+	  					if !strings.HasPrefix(a, string(os.PathSeparator)) {
+		  					a = path.Join(option.WorkingDir, a)
+			  			}
+				  		found = append(found, a)
+            }
 					}
 				}
 

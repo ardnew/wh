@@ -37,7 +37,13 @@ func (ErrNoArg) Error() string {
 
 // PathFlag contains each path found in each occurrence of its corresponding
 // command-line flag.
-type PathFlag []string
+type PathFlag struct { Path []string }
+
+// MakePathFlag returns an initialized PathFlag value.
+func MakePathFlag() PathFlag { return PathFlag{ Path: []string{} } }
+
+// Len returns the slice length of p.Path.
+func (p *PathFlag) Len() int { return len(p.Path) }
 
 // Set implements the flag.Value interface's Set method.
 // The given string s may be either a regular file path or a list of file paths,
@@ -47,22 +53,19 @@ type PathFlag []string
 // An error is returned for the first path encountered that contains invalid
 // symbols, if any, or otherwise nil.
 func (p *PathFlag) Set(s string) error {
-	if p == nil {
-		p = &PathFlag{}
-	}
 	for _, f := range strings.Split(s, string(os.PathListSeparator)) {
 		if err := wh.ValidPath(f); err != nil {
 			return err
 		}
-		*p = append(*p, f)
+		p.Path = append(p.Path, f)
 	}
 	return nil
 }
 
 // String returns a descriptive string of the receiver *PathFlag p.
 func (p *PathFlag) String() string {
-	t := make([]string, len(*p))
-	for i, s := range *p {
+	t := make([]string, len(p.Path))
+	for i, s := range p.Path {
 		t[i] = fmt.Sprintf("%q", s)
 	}
 	return "[" + strings.Join(t, ", ") + "]"
@@ -76,7 +79,7 @@ type flags struct {
 
 func main() {
 
-	fl := flags{FlagSet: flag.NewFlagSet("wh", flag.ContinueOnError), dir: PathFlag{}}
+	fl := flags{FlagSet: flag.NewFlagSet("wh", flag.ContinueOnError), dir: MakePathFlag() }
 	fl.Usage = fl.PrintDefaults
 
 	var fixedFlag, globFlag, regexpFlag bool
@@ -128,7 +131,7 @@ func main() {
 		fl.opt.WorkingDir = w
 	}
 
-	if len(fl.dir) == 0 {
+	if fl.dir.Len() == 0 {
 		var err error
 		if p, ok := os.LookupEnv("PATH"); ok {
 			err = fl.dir.Set(p)
@@ -143,7 +146,7 @@ func main() {
 	found := []string{}
 	warns := []error{}
 	for _, a := range fl.Args() {
-		f, err := fn(fl.opt, a, fl.dir...)
+		f, err := fn(fl.opt, a, fl.dir.Path...)
 		if err != nil {
 			warn := fmt.Errorf("warning: %w", err)
 			if warnFlag {
