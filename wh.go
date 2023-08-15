@@ -19,8 +19,8 @@ type Option struct {
 	Expr           expr.Expr // Matching semantics of the given pattern
 	IgnoreCase     bool      // Ignore case in matching semantics
 	WorkingDir     string    // Current working directory
-	fromFollow     int       // Count prior to following a symlink
 	fromDepth      int       // Depth prior to dereferencing a symlink
+	fromFollow     int       // Number of Links resolved
 }
 
 // MatchFunc is the signature of each of the exported matching functions.
@@ -108,6 +108,91 @@ func ValidPath(s string) error {
 	return nil
 }
 
+type (
+	// Chain holds a sequence of Link for a single path component.
+	Chain []*Link
+	// Link holds a single symlink dereference in a Chain.
+	Link struct {
+		root string
+		name string
+		ent  fs.DirEntry
+	}
+)
+
+// MakeChain creates a new Chain, initialized with the given list of Links.
+func MakeChain(link ...*Link) Chain {
+	return append(Chain{}, link...)
+}
+
+// Add adds the given list of Links to a Chain.
+func (c *Chain) Add(link ...*Link) {
+	*c = append(*c, link...)
+}
+
+// Head returns the first symlink in a Chain.
+func (c *Chain) Head() *Link {
+	if len(*c) > 0 {
+		return (*c)[0]
+	}
+	return nil
+}
+
+// String returns a graphical representation of a Chain.
+func (c *Chain) String() string {
+	if len(*c) == 0 {
+		return ""
+	} else if len(*c) == 1 {
+		return (*c)[0].Path()
+	} else {
+		var sb strings.Builder
+		for i := 0; i < len(*c); i++ {
+			branch := "└┬╼╸"
+			if i == 0 {
+				branch = "─┬╼╸"
+			} else if i == len(*c)-1 {
+				branch = "└─╼╸"
+			}
+			fmt.Fprintf(&sb, "%*s%s %s\n", i, "", branch, (*c)[i].Path())
+		}
+		return sb.String()
+	}
+}
+
+// NewLink returns a reference to a new Link, initialized with the given file
+// system attributes.
+func NewLink(root string, name string, ent fs.DirEntry) *Link {
+	return &Link{root: root, name: name, ent: ent}
+}
+
+// Path returns the result of joining the Link's file name to its parent
+// directory.
+func (l *Link) Path() string { return path.Join(l.root, l.name) }
+
+// IsSymlink returns true if and only if the Link has symlink mode bits set.
+func (l *Link) IsSymlink() bool { return l.ent.Type()&fs.ModeSymlink != 0 }
+
+// Deref creates and returns a new Link initialized with the destination's
+// file system attributes of the receive symlink.
+func (l *Link) Deref() (d Link, err error) {
+	var dest string
+	dest, err = os.Readlink(l.Path())
+	if err != nil {
+		return // Just ignore the symlink if there is any error.
+	}
+	if !path.IsAbs(dest) {
+		dest = path.Join(l.root, dest)
+	}
+	var info fs.FileInfo
+	info, err = os.Lstat(dest)
+	if err != nil {
+		return // Just ignore the symlink if there is any error.
+	}
+	d.root = path.Dir(dest)
+	d.name = path.Base(dest)
+	d.ent = fs.FileInfoToDirEntry(info)
+	return
+}
+
 func Match(option Option, pattern string, sub ...string) (found []string, err error) {
 
 	serr := make(ErrWalkDir, 0, len(sub))
@@ -131,66 +216,59 @@ func Match(option Option, pattern string, sub ...string) (found []string, err er
 					}
 				}
 
+				chain := MakeChain(NewLink(root, c, d))
+
 				// Before recursing down a directory, verify we won't exceed MaxDepth
-				depth := len(strings.FieldsFunc(strings.TrimPrefix(path.Join(root, c), root),
+				depth := len(strings.FieldsFunc(strings.TrimPrefix(chain.Head().Path(), root),
 					func(r rune) bool { return r == os.PathSeparator })) + option.fromDepth
 				//fmt.Printf("[%d] %s // %s\n", depth, root, c)
 				if d.IsDir() && depth >= option.MaxDepth {
 					// Stop processing this subtree if it exceeds MaxDepth.
 					return fs.SkipDir
 				}
-        name := c
 
 				// Special processing for symlinks if we should follow them.
-				if option.FollowSymlinks && d.Type()&fs.ModeSymlink != 0 {
+				if option.FollowSymlinks && chain.Head().IsSymlink() {
 
-					// Descriptors for the fully-resolved symlink
-					var info os.FileInfo
-					var dest = path.Join(root, c)
+					ptr := chain.Head()
 
 					// Repeatedly dereference the symlink until we have a regular file.
 					for {
-            rdest, rerr := os.Readlink(dest)
-            if rerr != nil {
-              return nil // Just ignore the symlink if there is any error.
-            }
-            if !path.IsAbs(rdest) {
-              rdest = path.Join(path.Dir(dest), rdest)
-            }
-            linfo, lerr := os.Lstat(rdest)
-						if lerr != nil {
+						dest, err := ptr.Deref()
+						if err != nil {
 							return nil // Just ignore the symlink if there is any error.
 						}
-            info, dest = linfo, rdest
-						if info.Mode().Type()&os.ModeSymlink == 0 {
-							// Dereferenced file is not a symlink; stop dereferencing.
-							break
+						chain.Add(&dest)
+						ptr = &dest
+						if !ptr.IsSymlink() {
+							break // Dereferenced file is not a symlink; stop dereferencing.
 						}
 					}
 
-					// At this point we can guarantee info is populated, because otherwise
-					// we would have returned early from the for-loop above.
+					// At this point, chain.Head() refers to the original symlink, and ptr
+					// refers to the regular file/dir to which it linked (directly or
+					// indirectly, in the case of nested symlinks).
 
 					// Check if symlink referred to a directory.
-					if info.IsDir() {
+					if ptr.ent.IsDir() {
 						// Regardless of the number of indirections, we consider it having
 						// recursed only 1 level. Verify that it doesn't exceed MaxDepth.
 						if depth+1 <= option.MaxDepth {
-							// Copy our existing Options, and update traversal counters so 
-              // that the recursive call to Match can accurately keep track
+							// Copy our existing Options, and update traversal counters so
+							// that the recursive call to Match can accurately keep track
 							// (which can not be computed by simply counting the number
 							// of directories between our Walk root and current descendent).
-              //
-              // This only modifies the copied Options struct;
-              //   the Options from the caller's context remain unmodified.
+							//
+							// This only modifies the copied Options struct;
+							//   the Options from the caller's context remain unmodified.
 							lopt := option
 							lopt.fromDepth = depth
-      				// Stop following symlinks as soon as we exceed MaxFollow.
-              lopt.fromFollow++
-				      lopt.FollowSymlinks = lopt.fromFollow < lopt.MaxFollow ||
-                lopt.MaxFollow < 0 // Negative = unlimited dereferences
+							// Stop following symlinks as soon as we exceed MaxFollow.
+							lopt.fromFollow++
+							lopt.FollowSymlinks = lopt.fromFollow < lopt.MaxFollow ||
+								lopt.MaxFollow < 0 // Negative = unlimited dereferences
 
-							mfound, merr := Match(lopt, pattern, dest)
+							mfound, merr := Match(lopt, pattern, ptr.Path())
 							// Just ignore the symlink if there is an error of any sort.
 							if merr == nil {
 								found = append(found, mfound...)
@@ -200,14 +278,14 @@ func Match(option Option, pattern string, sub ...string) (found []string, err er
 
 					// Update our DirEntry and current path to refer to our dereferenced
 					// file/directory.
-					d = fs.FileInfoToDirEntry(info)
-					c = dest
+					d = ptr.ent
+					c = ptr.Path()
 				}
 
 				// Finally, if current file is not a directory, test if it matches the
 				// user-provided pattern.
 				if !d.IsDir() {
-					base := path.Base(name)
+					base := path.Base(chain.Head().name)
 					if option.IgnoreCase {
 						base = strings.ToLower(base)
 					}
@@ -217,16 +295,8 @@ func Match(option Option, pattern string, sub ...string) (found []string, err er
 						// because the pattern is invalid.
 						return merr
 					} else if ok {
-						// No error, add the current file to our list of matches.
-            if path.IsAbs(c) {
-              found = append(found, c)
-            } else {
-  						a := path.Join(root, name)
-	  					if !strings.HasPrefix(a, string(os.PathSeparator)) {
-		  					a = path.Join(option.WorkingDir, a)
-			  			}
-				  		found = append(found, a)
-            }
+						// No error, add the current chain to our list of matches.
+						found = append(found, chain.String())
 					}
 				}
 
