@@ -37,10 +37,10 @@ func (ErrNoArg) Error() string {
 
 // PathFlag contains each path found in each occurrence of its corresponding
 // command-line flag.
-type PathFlag struct { Path []string }
+type PathFlag struct{ Path []string }
 
 // MakePathFlag returns an initialized PathFlag value.
-func MakePathFlag() PathFlag { return PathFlag{ Path: []string{} } }
+func MakePathFlag() PathFlag { return PathFlag{Path: []string{}} }
 
 // Len returns the slice length of p.Path.
 func (p *PathFlag) Len() int { return len(p.Path) }
@@ -79,7 +79,7 @@ type flags struct {
 
 func main() {
 
-	fl := flags{FlagSet: flag.NewFlagSet("wh", flag.ContinueOnError), dir: MakePathFlag() }
+	fl := flags{FlagSet: flag.NewFlagSet("wh", flag.ContinueOnError), dir: MakePathFlag()}
 	fl.Usage = fl.PrintDefaults
 
 	var fixedFlag, globFlag, regexpFlag bool

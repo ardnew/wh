@@ -13,14 +13,14 @@ import (
 
 // Option defines all search and match options for the exported Match functions.
 type Option struct {
-	FollowSymlinks bool      // Follow symlinks when recursing into subdirectories
 	MaxFollow      int       // Maximum number symlink components to follow
 	MaxDepth       int       // Maximum number of subdirectory recursions
 	Expr           expr.Expr // Matching semantics of the given pattern
-	IgnoreCase     bool      // Ignore case in matching semantics
 	WorkingDir     string    // Current working directory
 	fromDepth      int       // Depth prior to dereferencing a symlink
 	fromFollow     int       // Number of Links resolved
+	FollowSymlinks bool      // Follow symlinks when recursing into subdirectories
+	IgnoreCase     bool      // Ignore case in matching semantics
 }
 
 // MatchFunc is the signature of each of the exported matching functions.
